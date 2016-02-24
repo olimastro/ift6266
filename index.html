@@ -51,7 +51,7 @@
 <p>First I thought of a model like this <strong>x</strong> -&gt; <strong>h</strong> -&gt; <em>L</em> &lt;- <strong>x</strong> where <strong>x</strong> is the vector of input and <strong>h</strong> a shorthand for three independently computed quantities : <em>m</em> mixture coefficient, <em>a</em> averages of Gaussians and its <em>s</em> standard deviations, finally <em>L</em> the cost which is simply p(<strong>x</strong> ; <em>m</em>, <em>a</em>, <em>s</em>) = mixture of Gaussians (not sure I can type this equation on github) After asking around, I was told that this would not produce what I had hoped. It would instead learn a different distribution for every <strong>x</strong>. The good model would be to let <em>m</em>, <em>a</em> and <em>s</em> be free parameters like this : <strong>x</strong> -&gt; <em>L</em> &lt;- <strong>h</strong>. Not sure I understand why...</p>
 
 <h3>
-<a id="week-if-the-22th-of-february" class="anchor" href="#week-if-the-22th-of-february" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Week if the 22th of February</h3>
+<a id="week-of-the-22th-of-february" class="anchor" href="#week-of-the-22th-of-february" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Week of the 22th of February</h3>
 
 <p>Implementation of the first model <strong>x</strong> -&gt; <strong>h</strong> -&gt; <em>L</em> &lt;- <strong>x</strong>. It did not work as expected! However, this is the one that will be used on top of the RNN so its not wasted time. </p>
         </section>
