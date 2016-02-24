@@ -42,6 +42,18 @@
 <a id="week-of-the-1st-of-february-and-8th-of-february" class="anchor" href="#week-of-the-1st-of-february-and-8th-of-february" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Week of the 1st of February and 8th of February</h3>
 
 <p>I will concentrate my efforts on the Vocal Synthesis project. I familiarized myself with LSTM, installed blocks/fuel and started to try to understand how to use a simple LSTM for this task using blocks' framework.</p>
+
+<h3>
+<a id="week-of-the-15th-of-february" class="anchor" href="#week-of-the-15th-of-february" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Week of the 15th of February</h3>
+
+<p>Late update for that week as I was out of town for the weekend. This week I listened to Alex Graves' presentation on how to generate sample. I had trouble wrapping my head around everything. I will try to explain the basic idea of what I understand. First you have an RNN, on top of it you fit its output with a mixture of Gaussians from which you sample. These samples generate the next sequence. That's all good but what of the training process? How do you backpropagate a gradient to train the RNN? You could use the EM algorithm for the mixture phase, but then I don't quite understand how to train the RNN. An idea would be to do gradient descent on the likelihood as a cost function on the mixture of Gaussian, this would allow the gradient to go down the model. Let's try just the mixture model.</p>
+
+<p>First I thought a model this way <strong>x</strong> -&gt; <strong>h</strong> -&gt; <em>L</em> &lt;- <strong>x</strong> where <strong>x</strong> is the vector of input and <strong>h</strong> a shorthand for three independently computed quantities : <em>m</em> mixture coefficient, <em>a</em> averages of Gaussians and its <em>s</em> standard deviations, finally <em>L</em> the cost which is simply p(<strong>x</strong> ; <em>m</em>, <em>a</em>, <em>s</em>) = mixture of Gaussians (not sure I can type this equation on github) After asking around, I was told that this would not produce what I had hoped. It would instead learn a different distribution for every <strong>x</strong>. The good model would be to let <em>m</em>, <em>a</em> and <em>s</em> be free parameters like this : <strong>x</strong> -&gt; <em>L</em> &lt;- <strong>h</strong>. Not sure I understand why...</p>
+
+<h3>
+<a id="week-if-the-22th-of-february" class="anchor" href="#week-if-the-22th-of-february" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Week if the 22th of February</h3>
+
+<p>Implementation of the first model <strong>x</strong> -&gt; <strong>h</strong> -&gt; <em>L</em> &lt;- <strong>x</strong>. It did not work as expected! However, this is the one that will be used on top of the RNN so its not wasted time. </p>
         </section>
 
         <aside id="sidebar">
