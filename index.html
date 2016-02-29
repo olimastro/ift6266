@@ -53,7 +53,9 @@
 <h3>
 <a id="week-of-the-22th-of-february" class="anchor" href="#week-of-the-22th-of-february" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Week of the 22th of February</h3>
 
-<p>Implementation of the first model <strong>x</strong> -&gt; <strong>h</strong> -&gt; <em>L</em> &lt;- <strong>x</strong>. It did not work as expected! However, this is the one that will be used on top of the RNN so its not wasted time. </p>
+<p>Implementation of the first model <strong>x</strong> -&gt; <strong>h</strong> -&gt; <em>L</em> &lt;- <strong>x</strong>. It did not work as expected! However, this is the one that I think will be used on top of the RNN so its not wasted time. </p>
+
+<p>After a lot of conversation with people knowledgeable in generative models, looks like this approach is not going to work and was a waste of time. I investigated the other idea of doing EM on the output of the RNN. It could work, the problem is that you don't have an analytical (meaning I failed at taking a paper and do the derivatives by hand) gradient on the EM part of the model and thus cannot train using backprop the RNN under it. The only thing that sounds promising at this stage is to try making the free parameters model on last week post work, however so far it just doesn't want to converge on the good distribution. This sounded so simple and elegant on Alex Graves' presentation, one small equation P(x_t|x_1:t)...</p>
         </section>
 
         <aside id="sidebar">
