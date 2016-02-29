@@ -5,7 +5,7 @@ import sys
 
 np.random.seed(1234)
 
-class Mixture :
+class Mixture_MLP :
     def __init__(self, indim, hdim, batch_size=1) :
         self.batch_size = batch_size
         self.lr = 0.001
@@ -130,6 +130,6 @@ def make_data(amount=1000000) :
 
 
 if __name__ == "__main__" :
-    mix = Mixture(2, 12)
+    mix = Mixture_MLP(2, 12)
     mix.train()
 
