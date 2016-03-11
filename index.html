@@ -67,6 +67,11 @@
 <p>The challenge this week was to wrap my head around blocks and fuel. The problem is that the EM will be done by sklearn so outside theano and the likelihood will be computed inside theano. So first I tried to hack fuel by trying to pass the parameters of the mixtured as a DataStream channel, that didn't went far. Second I tried to find a way to give this to blocks, the reason is if I can work it out with blocks I will have access to all these already coded bricks like the LSTM. It took me a long time to understand but all I needed was the ComputationGraph class from which you can easily get the parameters of all your bricks. You can then build yourself a gradient and use theano.function with your own inputs and cost and boom magic. Handy trick to know.</p>
 
 <p>I have implemented these ideas with a fake data and a brick MLP, I just wanted for this week to get the code executing without error so next week comes the real dataset.</p>
+
+<h3>
+<a id="week-of-the-7th-of-march" class="anchor" href="#week-of-the-7th-of-march" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Week of the 7th of March</h3>
+
+<p>This week was much about programming, I implemented and fixed bugs for the model of last week with the true LSTM brick. On a few test run the likelihood seemed to be going down. I also added a few monitoring stuff since it is going to run on a GPU now. Let's see if at least the likelihood is going down through some epochs and after that, generation time. </p>
         </section>
 
         <aside id="sidebar">
