@@ -72,6 +72,8 @@
 <a id="week-of-the-7th-of-march" class="anchor" href="#week-of-the-7th-of-march" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Week of the 7th of March</h3>
 
 <p>This week was much about programming, I implemented and fixed bugs for the model of last week with the true LSTM brick. On a few test run the likelihood seemed to be going down. I also added a few monitoring stuff since it is going to run on a GPU now. Let's see if at least the likelihood is going down through some epochs and after that, generation time. </p>
+
+<p>Unfortunately, at some point right before the change of epoch the likelihood suddenly goes to NaN. I have implemented a feature to save the model's parameters and spend most of my time debugging that.</p>
         </section>
 
         <aside id="sidebar">
