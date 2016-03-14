@@ -18,6 +18,8 @@ from sklearn.mixture import GMM
 np.random.seed(1234)
 np.seterr(all='warn')
 
+EXP_PATH = "/Tmp/mastropo/"
+
 """
     This class will train a mixture of gaussian.
     First, an RNN will produce a hidden state.
@@ -32,6 +34,7 @@ class RNN_EM :
         self.number_of_mix = number_of_mix
         self.input_dim = input_dim
         self.samplerate = samplerate
+        self.best_ll = np.inf
 
         self.bprop, self.fprop = self.build_theano_functions()
 
@@ -58,6 +61,7 @@ class RNN_EM :
         cost = -T.log(LL)
 
         cg = ComputationGraph(cost)
+        self.cg = cg
         parameters = cg.parameters
         grads = T.grad(cost, parameters)
         updates = []
@@ -92,6 +96,22 @@ class RNN_EM :
         return np.array([sigmas, mus, pis], dtype=np.float32)
 
 
+    def save_model(self, cost, not_best=False) :
+        prefix = "best_"
+        if not_best :
+            prefix = ''
+            cost = -np.inf
+
+        if cost < self.best_ll :
+            self.best_ll = cost
+            params = self.cg.parameters
+            for param in params :
+                name = str(param)
+                values = param.get_value()
+                f = open(prefix+EXP_PATH+name+'.npy','w')
+                np.save(f, values)
+
+
     def train(self, data, epochs=50):
         data = self.prepare_data(data)
         print "Initializing GMM"
@@ -104,10 +124,9 @@ class RNN_EM :
             print
             print "New epoch #", epoch
             cost = 0.
-            j = 0
             k = 1
-            for i in range(0, len(data)-self.input_dim, self.input_dim) :
-                j+=1
+            nan_flag = False
+            for i in range(0, (len(data)-self.input_dim), self.input_dim) :
                 sys.stdout.write('\rComputing LL on %d/%d examples'%(i, data.shape[0]))
                 sys.stdout.flush()
                 x = data[i:i+self.input_dim].flatten()
@@ -124,10 +143,21 @@ class RNN_EM :
                 if nblocks >= k and nblocks <= costs.shape[1] :
                     k+=1
                     costs[epoch,nblocks-1] = cost-np.sum(costs[epoch,:nblocks-1])
+                    self.save_model(cost)
 
-            f = open("/Tmp/mastropo/rnn_em_cost_gpu.npy",'w')
+                if np.isnan(cost) :
+                    print
+                    print "WARNING : NaN detected in cost, dumping to files and exiting"
+                    nan_flag = True
+                    break
+
+            f = open(EXP_PATH+"rnn_em_cost_gpu.npy",'w')
             np.save(f, costs)
             f.close()
+
+            if nan_flag :
+                self.save_model(0, not_best=True)
+                sys.exit()
 
 
     # normalize the data in [-1,1]
