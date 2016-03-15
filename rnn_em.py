@@ -3,12 +3,14 @@ import theano
 import theano.tensor as T
 import sys
 import matplotlib.pylab as plt
+import cPickle as pkl
 
 from blocks import initialization
 from blocks.bricks import Tanh
 from blocks.bricks.recurrent import LSTM
-from blocks.graph import ComputationGraph
+#from blocks.graph import ComputationGraph
 from blocks.initialization import IsotropicGaussian, Constant
+from blocks.model import Model
 
 from scipy.io.wavfile import read
 from scipy.io.wavfile import write
@@ -29,7 +31,9 @@ EXP_PATH = "/Tmp/mastropo/"
     and the hidden state.
 """
 class RNN_EM :
-    def __init__(self, number_of_mix=3, learning_rate=0.01, input_dim=4800, samplerate=48000):
+    def __init__(self, number_of_mix=3, learning_rate=0.01, input_dim=4800, samplerate=48000, model_saving=True, load=False) :
+        self.model_saving=model_saving
+        self.load = load
         self.lr = learning_rate
         self.number_of_mix = number_of_mix
         self.input_dim = input_dim
@@ -60,9 +64,13 @@ class RNN_EM :
             -0.5*(h-mu)**2/T.reshape(s,(self.number_of_mix,1))**2.).sum(axis=1))
         cost = -T.log(LL)
 
-        cg = ComputationGraph(cost)
-        self.cg = cg
-        parameters = cg.parameters
+        #cg = ComputationGraph(cost)
+        #self.cg = cg
+        #parameters = cg.parameters
+        model = Model(cost)
+        self.model = model
+        parameters = model.parameters
+
         grads = T.grad(cost, parameters)
         updates = []
         for i in range(len(grads)) :
@@ -97,22 +105,39 @@ class RNN_EM :
 
 
     def save_model(self, cost, not_best=False) :
+        if not self.model_saving :
+            return
         prefix = "best_"
+        name = "rnn_em_params.pkl"
         if not_best :
             prefix = ''
             cost = -np.inf
 
         if cost < self.best_ll :
             self.best_ll = cost
-            params = self.cg.parameters
-            for param in params :
-                name = str(param)
-                values = param.get_value()
-                f = open(prefix+EXP_PATH+name+'.npy','w')
-                np.save(f, values)
+            params = self.model.get_parameter_values()
+            f = open(EXP_PATH+prefix+name,'w')
+            pkl.dump(params, f)
+            f.close()
+
+
+    def load_model(self, best=True) :
+        if best :
+            prefix = "best_"
+        else :
+            prefix = ''
+        name = "rnn_em_params.pkl"
+        f = open(EXP_PATH+prefix+name)
+        params = pkl.load(f)
+        f.close()
+        return params
 
 
     def train(self, data, epochs=50):
+        if self.load :
+            print "Loading previously saved model"
+            self.model.set_parameter_values(self.load_model())
+
         data = self.prepare_data(data)
         print "Initializing GMM"
         self.init_em_model(data)
@@ -126,7 +151,8 @@ class RNN_EM :
             cost = 0.
             k = 1
             nan_flag = False
-            for i in range(0, (len(data)-self.input_dim), self.input_dim) :
+            for i in range(164226337, (len(data)-self.input_dim), self.input_dim) :
+                #import ipdb ; ipdb.set_trace()
                 sys.stdout.write('\rComputing LL on %d/%d examples'%(i, data.shape[0]))
                 sys.stdout.flush()
                 x = data[i:i+self.input_dim].flatten()
@@ -135,7 +161,7 @@ class RNN_EM :
                 self.gmm.fit(y)
                 gmm_param_list = self.get_gmm_param()
                 # Train the RNN with the likelihood over the parametrized distribution (found with EM)
-                # with x_t+1
+                # with x_t+158M
                 _cost = self.bprop(x[np.newaxis],gmm_param_list[0],gmm_param_list[1].reshape((self.number_of_mix,1)),gmm_param_list[2])
                 cost += _cost[0]
 
@@ -192,5 +218,5 @@ if __name__ == "__main__" :
     samplerate = data[0]
     data = data[1]
 
-    model = RNN_EM(input_dim=2*(samplerate/10), samplerate=samplerate)
+    model = RNN_EM(input_dim=2*(samplerate/10), samplerate=samplerate, model_saving=False, load=True)
     model.train(data)
