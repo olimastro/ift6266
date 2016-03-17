@@ -32,9 +32,10 @@ class Mixture :
 
         norm = ((x-self.mu)**2).sum(axis=1, keepdims=True)
         lambdas = T.nnet.softmax(self.lambdas)
-        #sigmas = T.nnet.relu(self.sigma)+0.0001
+        sigmas = T.nnet.relu(self.sigma)+0.1
 
-        loss = -T.log(T.sum(lambdas*(1./(2.*np.pi*self.sigma**2))*T.exp(-0.5*norm/self.sigma**2)))
+        #loss = -T.log(T.sum(lambdas*(1./(2.*np.pi*self.sigma**2))*T.exp(-0.5*norm/self.sigma**2)))
+        loss = -T.log(T.sum(lambdas*(1./(2.*np.pi*sigmas**2))*T.exp(-0.5*norm/sigmas**2)))
         #loss = T.sum(lambdas*(1./(2.*np.pi*sigmas**2))*T.exp(-0.5*norm/sigmas))
         #loss = T.sum(lambdas*T.exp(-0.5*norm/sigmas))
 
@@ -47,7 +48,7 @@ class Mixture :
                 [loss, gradm, grads, gradl],
                 updates = [
                     (self.mu, self.mu - self.lr*gradm),
-                    (self.sigma, self.sigma - self.lr*grads),
+                    (self.sigma, self.sigma - (self.lr/10.)*grads),
                     (self.lambdas, self.lambdas - self.lr*gradl),
                     ]
                 )
@@ -70,13 +71,14 @@ class Mixture :
                 _ll, gm, gs, gl = self.bprop(data[i:i+self.batch_size].flatten())
                 #import pdb ; pdb.set_trace()
                 #self.printt(ll)
-                #if i%1000==True :
-                #    #self.printt(ll, [gm,gs,gl])
-                #    self.printt(ll)
-                #    #import pdb ; pdb.set_trace()
+                if i%10000==True :
+                    #self.printt(ll, [gm,gs,gl])
+                    self.printt(ll)
+                    #import pdb ; pdb.set_trace()
                 gradient[i] = np.linalg.norm(gs)
                 ll+= _ll
 
+            sys.exit()
             plt.plot(gradient)
             plt.show()
             cst = (data.shape[0]/self.batch_size)
