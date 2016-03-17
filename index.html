@@ -74,6 +74,11 @@
 <p>This week was much about programming, I implemented and fixed bugs for the model of last week with the true LSTM brick. On a few test run the likelihood seemed to be going down. I also added a few monitoring stuff since it is going to run on a GPU now. Let's see if at least the likelihood is going down through some epochs and after that, generation time. </p>
 
 <p>Unfortunately, at some point right before the change of epoch the likelihood suddenly goes to NaN. I have implemented a feature to save the model's parameters and spend most of my time debugging that.</p>
+
+<h3>
+<a id="week-of-the-13th-of-march" class="anchor" href="#week-of-the-13th-of-march" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Week of the 13th of March</h3>
+
+<p>This week was characterized by again going back to previous ideas and redoing a lot of things. I was not able to debug the NaN in the rnn_em model. I decided out of curiosity to go check the actual paper of Alex Graves' presentation and boom. I finally realized and understood what he meant by those mixtures of Gaussian and how to completely backpropagate on it using RNNs, no need to go out of this theano to do EM this time! I went back to my code and programmed this new model named lstm_gmm. What took me most of my time this week was that I had to figure out how to use all these Blocks' bricks and some numpy broadcasting magic but it all worked out. It is now running (10 times faster since it can stay in theano) and will start generating sound. Now I can run everything with blocks and use the MainLoop class so I might sadly scrap what I did last week.</p>
         </section>
 
         <aside id="sidebar">
