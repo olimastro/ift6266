@@ -12,6 +12,7 @@ from blocks.model import Model
 
 from scipy.io.wavfile import read
 from scipy.io.wavfile import write
+from scipy import signal
 
 from sklearn.mixture import GMM
 from theano.compile.nanguardmode import NanGuardMode
@@ -21,16 +22,16 @@ np.seterr(all='warn')
 EXP_PATH = "/Tmp/mastropo/"
 NAME = "lstm_gmm"
 EPOCHS = 15
-# x mixtures = 3*x params for time serie
-NMIXTURES = 20
+WINDOW_SIZE = 512
+OVERLAP = WINDOW_SIZE/2
 # [0] : sequence of points in time
 # [1] : batch size (doesn't make sense to be more than 1?)
-# [2] : input dimension (1 for time serie)
-# [3] : lstm dimension, hidden representation
-# [4] : output dimension, should be equal to number of GMM params
-DIMS_TUPLE = (800, 1, 1, 800, NMIXTURES*3)
+# [2] : input dimension, the spectrogram has window_size+2 (DC comp for amplitude and phase)
+# [3] : output dimension, we have 2 gaussians of two param per freq bin
+DIMS_LIST = [512, 1, WINDOW_SIZE+2, (WINDOW_SIZE+2)*2]
 # list[i] = dim of ith layer
-LSTM_DIM_LIST = [512, 512, 512]
+#LSTM_DIM_LIST = [512, 512, 512]
+LSTM_DIM_LIST = [512]
 
 """
     This class will train a mixture of gaussian.
@@ -41,8 +42,8 @@ LSTM_DIM_LIST = [512, 512, 512]
     and the hidden state.
 """
 class LSTM_GMM :
-    def __init__(self, dims_tuple, lstm_dim_list, gmm_dim, learning_rate=0.000001, samplerate=48000, model_saving=False, load=False) :
-        self.debug = 1
+    def __init__(self, dims_list, lstm_dim_list, learning_rate=0.000001, samplerate=48000, model_saving=False, load=False) :
+        self.debug = 0
         self.model_saving=model_saving
         self.load = load
         self.lr = learning_rate
@@ -50,19 +51,15 @@ class LSTM_GMM :
         self.samplerate = samplerate
         self.best_ll = np.inf
 
-        self.time_dim = dims_tuple[0]
-        #self.time_dim = 2
-        self.batch_dim = dims_tuple[1]
-        self.input_dim = dims_tuple[2]
-        self.output_dim = dims_tuple[4]
-        self.gmm_dim = gmm_dim
+        self.time_dim = dims_list[0]
+        self.batch_dim = dims_list[1]
+        self.input_dim = dims_list[2]
+        self.output_dim = dims_list[3]
 
         self.lstm_layers_dim = lstm_dim_list
 
-        assert self.gmm_dim*3 == self.output_dim
 
-
-    def build_theano_functions(self, data_mean, data_std) :
+    def build_theano_functions(self) :
         x = T.ftensor3('x') # shape of input : batch X time X value
         y = T.ftensor3('y')
         z = T.ftensor3('z')
@@ -80,34 +77,12 @@ class LSTM_GMM :
             # be transformed
             linear = Linear(dims[layer],
                             dims[layer+1]*4,
-                            weights_init=Uniform(mean=data_mean, std=1),
-                            #weights_init=IsotropicGaussian(mean=1.,std=1),
+                            #weights_init=Uniform(mean=data_mean, std=1),
+                            weights_init=IsotropicGaussian(mean=1.,std=1),
                             biases_init=Constant(0),
                             name="linear"+str(layer))
             linear.initialize()
             lstm_input = linear.apply(layers_input[layer])
-
-            #linear_transforms = []
-            #for transform in ['c','i','f','o'] :
-            #    transform = transform+str(layer)
-            #    linear_transforms.append(
-            #        Linear(self.input_dim,
-            #               self.lstm_layers[1][layer],
-            #               weights_init=Uniform(mean=data_mean, std=1),
-            #               #weights_init=IsotropicGaussian(mean=1.,std=1),
-            #               biases_init=Constant(0),
-            #               name=transform+"_transform")
-            #    )
-
-            #for transform in linear_transforms :
-            #    transform.initialize()
-
-            #linear_applications = []
-            #for transform in linear_transforms :
-            #    linear_applications.append(
-            #        transform.apply(layers_input[layer]))
-
-            #lstm_input = T.concatenate(linear_applications, axis=2)
 
             # the lstm wants batch X time X value
             lstm = LSTM(
@@ -122,13 +97,13 @@ class LSTM_GMM :
 
             layers_input.append(h)
 
-        # this is where Alex Graves' paper starts
+        # the idea is to have one gaussian parametrize every frequency bin
         print "Last linear transform dim :", dims[1:].sum()
         output_transform = Linear(dims[1:].sum(),
                                   self.output_dim,
-                                  #weights_init=Uniform(mean=data_mean, std=data_std),
                                   weights_init=IsotropicGaussian(mean=0., std=1),
-                                  use_bias=False,
+                                  biases_init=Constant(0),
+                                  #use_bias=False,
                                   name="output_transform")
         output_transform.initialize()
         if len(self.lstm_layers_dim) == 1 :
@@ -137,29 +112,16 @@ class LSTM_GMM :
         else :
             y_hat = output_transform.apply(T.concatenate(layers_input[1:], axis=2))
 
-        # transforms to find each gmm params (mu, pi, sig)
-        # small hack to softmax a 3D tensor
-        #pis = T.reshape(
-        #            T.nnet.softmax(
-        #                T.nnet.sigmoid(
-        #                    T.reshape(y_hat[:,:,0:self.gmm_dim], (self.time_dim*self.batch_dim, self.gmm_dim)))),
-        #            (self.batch_dim, self.time_dim, self.gmm_dim))
-        pis = T.reshape(
-                    T.nnet.softmax(
-                        T.reshape(y_hat[:,:,0:self.gmm_dim], (self.time_dim*self.batch_dim, self.gmm_dim))),
-                    (self.batch_dim, self.time_dim, self.gmm_dim))
         #sig = T.exp(y_hat[:,:,self.gmm_dim:self.gmm_dim*2])
-        sig = T.nnet.relu(y_hat[:,:,self.gmm_dim:self.gmm_dim*2])+0.05
+        sig = T.nnet.relu(y_hat[:,:,:self.output_dim/2])+0.05
         #mus = 1.5*T.tanh(y_hat[:,:,self.gmm_dim*2:])
-        mus = y_hat[:,:,self.gmm_dim*2:]
+        mus = y_hat[:,:,self.output_dim/2:]
 
-        pis = pis[:,:,:,np.newaxis]
         mus = mus[:,:,:,np.newaxis]
         sig = sig[:,:,:,np.newaxis]
         y = y[:,:,np.newaxis,:]
         z = z[:,:,np.newaxis,:]
 
-        #pis=theano.printing.Print()(pis)
         #mus=theano.printing.Print()(mus)
         #sig=theano.printing.Print()(sig)
 
@@ -171,7 +133,7 @@ class LSTM_GMM :
         #expo = T.exp(-0.5*((y-mus)**2)/sig**2)
         expo = T.exp(inside_expo)
         #expo=theano.printing.Print()(expo)
-        coeff = pis*(1./(T.sqrt(2.*np.pi)*sig))
+        coeff = 1./(T.sqrt(2.*np.pi)*sig)
         #coeff=theano.printing.Print()(coeff)
         inside_log = T.log(coeff*expo)
         inside_log_max = T.max(inside_log, axis=2, keepdims=True)
@@ -197,11 +159,11 @@ class LSTM_GMM :
 
         #gradf = theano.function([x, y],[LL],updates=updates, mode=NanGuardMode(nan_is_error=True, inf_is_error=True, big_is_error=False))
         if self.debug :
-            gradf = theano.function([x, y, lr],[LL, pis, mus, sig],updates=updates)
+            gradf = theano.function([x, y, lr],[LL, mus, sig],updates=updates)
         else :
             #gradf = theano.function([x, y, z],[zLL],updates=updates)
             gradf = theano.function([x, y, lr],[LL],updates=updates)
-        f = theano.function([x],[pis, sig, mus])
+        f = theano.function([x],[sig, mus])
 
         return gradf, f
 
@@ -239,16 +201,18 @@ class LSTM_GMM :
 
     def train(self, data, epochs=EPOCHS):
         #import ipdb ; ipdb.set_trace()
-        data, data_mean, data_std  = self.prepare_data(data)
-        print data_mean, data_std
+        print "Creating the spectrogram"
+        # Spec is shape (time, features)
+        # first half of features is the freq's amplitudes
+        # second half of features is the freq's phases
+        spec  = self.prepare_data(data.astype(np.float32))
         print "Building Theano Graph"
-        self.bprop, self.fprop = self.build_theano_functions(data_mean, data_std)
+        self.bprop, self.fprop = self.build_theano_functions()
 
         if self.load :
             self.load_model()
 
-        blocks = float(np.floor(self.samplerate*60.*1.))
-        costs = np.zeros((epochs,len(data)/blocks))
+        blocks = int(spec.shape[0]/(float(len(data))/self.samplerate*60))
 
         for epoch in range(epochs):
             print
@@ -256,15 +220,15 @@ class LSTM_GMM :
             cost = 0.
             k = 1
             nan_flag = False
-            for i in range(0, (len(data)-2*self.time_dim), self.time_dim) :
-                sys.stdout.write('\rComputing LL on %d/%d examples'%(i, data.shape[0]))
+            for i in range(0, (len(spec)-2*self.time_dim), self.time_dim) :
+                sys.stdout.write('\rComputing LL on %d/%d examples'%(i, spec.shape[0]))
                 sys.stdout.flush()
 
-                x = data[i:i+self.time_dim]
+                x = spec[i:i+self.time_dim]
                 x = x.reshape((self.batch_dim, self.time_dim, self.input_dim))
 
                 #y = data[i+self.time_dim:i+2*self.time_dim]
-                y = data[i+1:i+self.time_dim+1]
+                y = spec[i+1:i+self.time_dim+1]
                 y = y.reshape((self.batch_dim, self.time_dim, self.input_dim))
                 y = y[:,:,np.newaxis,:]
 
@@ -282,7 +246,7 @@ class LSTM_GMM :
 
                 nblocks = np.floor(i/blocks)
                 if nblocks >= k and nblocks <= costs.shape[1] :
-                    #print cost
+                    print cost
                     make_nice_print(l)
                     k+=1
                     #costs[epoch,nblocks-1] = cost-np.sum(costs[epoch,:nblocks-1])
@@ -349,15 +313,15 @@ class LSTM_GMM :
         return gmm.sample()
 
 
-
-    # normalize the data in [-1,1]
-    # and bring it to 0 mean 1 variance <-- could be a bad idea...
     def prepare_data(self, data) :
-        data = data[self.samplerate*60*2:len(data)-self.samplerate*60*2]
-        data = data.astype(np.float32)
-        data = data/np.max(data)
-        #data = (data-np.average(data))/np.std(data)
-        return data, np.mean(data), np.std(data)
+        window = signal.cosine(WINDOW_SIZE)
+
+        f_data = signal.spectrogram(data, window=window, nperseg=WINDOW_SIZE, noverlap=OVERLAP, mode='magnitude')
+        f_data_mag = np.swapaxes(f_data[2], 0, 1)
+        f_data = signal.spectrogram(data, window=window, nperseg=WINDOW_SIZE, noverlap=OVERLAP, mode='phase')
+        f_data_pha = np.swapaxes(f_data[2], 0, 1)
+
+        return np.append(f_data_mag, f_data_pha, axis=1)
 
 
 
@@ -369,29 +333,13 @@ def make_nice_print(l) :
     print "sig =", l[3][0,2]
 
 
-def make_data(amount=1000000):
-    data = np.zeros((amount, 1))
-    p1 = 0.3
-    p2 = 0.2
-    p3 = 0.5
-    print "Using three mixtures with "+str(p1)+" and "+str(p2)+" and "+str(p3)
-    mix1 = int(p1*amount)
-    mix2 = int(p2*amount)
-    mix3 = amount-mix1-mix2
-    data[:mix1] = np.random.normal(-1,0.5,(mix1,1))
-    data[mix1:mix1+mix2] = np.random.normal(2,1.,(mix2,1))
-    data[mix1+mix2:] = np.random.normal(5,1.5,(mix3,1))
-
-    return data
-
-
 if __name__ == "__main__" :
     print "Loading data"
     data = read("/Tmp/mastropo/XqaJ2Ol5cC4.wav")
     samplerate = data[0]
     data = data[1]
 
-    model = LSTM_GMM(DIMS_TUPLE, LSTM_DIM_LIST, NMIXTURES, samplerate=samplerate)
+    model = LSTM_GMM(DIMS_LIST, LSTM_DIM_LIST, samplerate=samplerate)
     model.train(data)
     #model.load_model()
     #model.generate(1,0)
