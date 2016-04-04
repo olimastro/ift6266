@@ -88,6 +88,15 @@
 <p>A few days later I implemented the logadd function like we learnt in the machine learning class. logadd(a, b) = m + log(exp(a-m) + exp(b-m) where m = max(a, b). It is now way more numerically stable and the likelhood dropped by a lot! Still, the same kind of behaviour persists. It seems that I either give the model not enough capacity so the likelihood just oscillates because of variance in the data, giving me false impression of training but actually nothing is trained. Or, I give it too much capacity and it settles very quickly into a region and doesn't move from there. </p>
 
 <p>I see three explanations or ways to move forward here : First the right capacity for this learning task is in a very narrow region and would require extensive hyper-param tuning, second it could just not a good model for this task or third my code is simply bugged. I spent quite a lot of time this week on the first option and running different experiments with different values of the LSTM dimension or GMM with me always falling into one of the two cases mentioned earlier. Now to rule out the third option I would have to port this model to exactly reproduce the handwriting experiment in the original paper. I ought to try that, but time is slowly running short...</p>
+
+<h3>
+<a id="week-of-the-28th-of-march" class="anchor" href="#week-of-the-28th-of-march" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Week of the 28th of March</h3>
+
+<p>So this is going nowhere. I noticed a nasty bug but even by fixing that it keeps on having the same behaviour as explained last week. I could still technically implement the original paper and see if I am doing something wrong when computing the cost function, but it seems to me the failure is not there. </p>
+
+<p>I have carried on with my motivation on why I tried this paper on the first place. I wanted to apply it on the frequency domain where it makes sense to model each frequency bin of the spectrogram as a Gaussian.</p>
+
+<p>This week I restructured the code and implemented that idea on a new python script, but of course, on the first execution I was welcomed with NaNs. To be continued next week. </p>
         </section>
 
         <aside id="sidebar">
