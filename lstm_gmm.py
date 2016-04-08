@@ -21,16 +21,18 @@ np.seterr(all='warn')
 EXP_PATH = "/Tmp/mastropo/"
 NAME = "lstm_gmm"
 EPOCHS = 15
+EPS = 1e-7
 # x mixtures = 3*x params for time serie
-NMIXTURES = 20
-# [0] : sequence of points in time
+NMIXTURES = 15
+# [0] : time dimension for one sequence
 # [1] : batch size (doesn't make sense to be more than 1?)
 # [2] : input dimension (1 for time serie)
-# [3] : lstm dimension, hidden representation
+# [3] : sequence dimension
 # [4] : output dimension, should be equal to number of GMM params
-DIMS_TUPLE = (800, 1, 1, 800, NMIXTURES*3)
+DIMS_TUPLE = (16000, 1, 1, 10, NMIXTURES*3)
 # list[i] = dim of ith layer
-LSTM_DIM_LIST = [512, 512, 512]
+LSTM_DIM_LIST = [512, 512]
+#LSTM_DIM_LIST = [400]
 
 """
     This class will train a mixture of gaussian.
@@ -41,19 +43,20 @@ LSTM_DIM_LIST = [512, 512, 512]
     and the hidden state.
 """
 class LSTM_GMM :
-    def __init__(self, dims_tuple, lstm_dim_list, gmm_dim, learning_rate=0.000001, samplerate=48000, model_saving=False, load=False) :
-        self.debug = 1
+    def __init__(self, dims_tuple, lstm_dim_list, gmm_dim, learning_rate=0.0000001, samplerate=48000, model_saving=False, load=False) :
+        self.debug = 0
         self.model_saving=model_saving
         self.load = load
         self.lr = learning_rate
         #self.lr = 0
+        self.orth_scale = 0.9
         self.samplerate = samplerate
         self.best_ll = np.inf
 
         self.time_dim = dims_tuple[0]
-        #self.time_dim = 2
         self.batch_dim = dims_tuple[1]
         self.input_dim = dims_tuple[2]
+        self.sequence_dim = dims_tuple[3]
         self.output_dim = dims_tuple[4]
         self.gmm_dim = gmm_dim
 
@@ -62,13 +65,12 @@ class LSTM_GMM :
         assert self.gmm_dim*3 == self.output_dim
 
 
-    def build_theano_functions(self, data_mean, data_std) :
+    def build_theano_functions(self) :
         x = T.ftensor3('x') # shape of input : batch X time X value
-        y = T.ftensor3('y')
-        z = T.ftensor3('z')
+        y = T.ftensor4('y')
 
         layers_input = [x]
-        dims =np.array([self.input_dim])
+        dims =np.array([self.time_dim])
         for dim in self.lstm_layers_dim :
             dims = np.append(dims, dim)
         print "Dimensions =", dims
@@ -80,34 +82,12 @@ class LSTM_GMM :
             # be transformed
             linear = Linear(dims[layer],
                             dims[layer+1]*4,
-                            weights_init=Uniform(mean=data_mean, std=1),
+                            weights_init=Orthogonal(self.orth_scale),
                             #weights_init=IsotropicGaussian(mean=1.,std=1),
                             biases_init=Constant(0),
                             name="linear"+str(layer))
             linear.initialize()
             lstm_input = linear.apply(layers_input[layer])
-
-            #linear_transforms = []
-            #for transform in ['c','i','f','o'] :
-            #    transform = transform+str(layer)
-            #    linear_transforms.append(
-            #        Linear(self.input_dim,
-            #               self.lstm_layers[1][layer],
-            #               weights_init=Uniform(mean=data_mean, std=1),
-            #               #weights_init=IsotropicGaussian(mean=1.,std=1),
-            #               biases_init=Constant(0),
-            #               name=transform+"_transform")
-            #    )
-
-            #for transform in linear_transforms :
-            #    transform.initialize()
-
-            #linear_applications = []
-            #for transform in linear_transforms :
-            #    linear_applications.append(
-            #        transform.apply(layers_input[layer]))
-
-            #lstm_input = T.concatenate(linear_applications, axis=2)
 
             # the lstm wants batch X time X value
             lstm = LSTM(
@@ -117,7 +97,8 @@ class LSTM_GMM :
                 name="lstm"+str(layer))
             lstm.initialize()
             # hack to use Orthogonal on lstm w_state
-            lstm.W_state.set_value(Orthogonal().generate(np.random, lstm.W_state.get_value().shape))
+            lstm.W_state.set_value(
+                self.orth_scale*Orthogonal().generate(np.random, lstm.W_state.get_value().shape))
             h, _dummy = lstm.apply(lstm_input)
 
             layers_input.append(h)
@@ -126,8 +107,8 @@ class LSTM_GMM :
         print "Last linear transform dim :", dims[1:].sum()
         output_transform = Linear(dims[1:].sum(),
                                   self.output_dim,
-                                  #weights_init=Uniform(mean=data_mean, std=data_std),
-                                  weights_init=IsotropicGaussian(mean=0., std=1),
+                                  weights_init=Orthogonal(self.orth_scale),
+                                  #weights_init=IsotropicGaussian(mean=0., std=1),
                                   use_bias=False,
                                   name="output_transform")
         output_transform.initialize()
@@ -146,43 +127,34 @@ class LSTM_GMM :
         #            (self.batch_dim, self.time_dim, self.gmm_dim))
         pis = T.reshape(
                     T.nnet.softmax(
-                        T.reshape(y_hat[:,:,0:self.gmm_dim], (self.time_dim*self.batch_dim, self.gmm_dim))),
-                    (self.batch_dim, self.time_dim, self.gmm_dim))
-        #sig = T.exp(y_hat[:,:,self.gmm_dim:self.gmm_dim*2])
-        sig = T.nnet.relu(y_hat[:,:,self.gmm_dim:self.gmm_dim*2])+0.05
-        #mus = 1.5*T.tanh(y_hat[:,:,self.gmm_dim*2:])
+                        T.reshape(y_hat[:,:,:self.gmm_dim], (self.sequence_dim*self.batch_dim, self.gmm_dim))),
+                    (self.batch_dim, self.sequence_dim, self.gmm_dim))
+        sig = T.exp(y_hat[:,:,self.gmm_dim:self.gmm_dim*2])+1e-6
+        #sig = T.nnet.relu(y_hat[:,:,self.gmm_dim:self.gmm_dim*2])+0.1
+        #mus = 2.*T.tanh(y_hat[:,:,self.gmm_dim*2:])
         mus = y_hat[:,:,self.gmm_dim*2:]
 
         pis = pis[:,:,:,np.newaxis]
         mus = mus[:,:,:,np.newaxis]
         sig = sig[:,:,:,np.newaxis]
-        y = y[:,:,np.newaxis,:]
-        z = z[:,:,np.newaxis,:]
+        #y = y[:,:,np.newaxis,:]
 
-        #pis=theano.printing.Print()(pis)
-        #mus=theano.printing.Print()(mus)
-        #sig=theano.printing.Print()(sig)
+        y = T.patternbroadcast(y, (False, False, True, False))
+        mus = T.patternbroadcast(mus, (False, False, False, True))
+        sig = T.patternbroadcast(sig, (False, False, False, True))
 
         # sum likelihood with targets
-        # sum inside log accross mixtures, sum outside log accross time
-        #LL = -T.log((pis*(1./(T.sqrt(2.*np.pi)*sig))*T.exp(-0.5*((y-mus)**2)/sig**2)).sum(axis=2)).sum()
-        inside_expo = -0.5*((y-mus)**2)/sig**2
-        #inside_expo=theano.printing.Print()(inside_expo)
-        #expo = T.exp(-0.5*((y-mus)**2)/sig**2)
-        expo = T.exp(inside_expo)
-        #expo=theano.printing.Print()(expo)
-        coeff = pis*(1./(T.sqrt(2.*np.pi)*sig))
-        #coeff=theano.printing.Print()(coeff)
-        inside_log = T.log(coeff*expo)
-        inside_log_max = T.max(inside_log, axis=2, keepdims=True)
-        #inside_log=theano.printing.Print()(inside_log)
-        LL = -(inside_log_max + T.log(T.sum(T.exp(inside_log - inside_log_max), axis=2, keepdims=True))).sum()
+        # see blog for this crazy Pr() = sum log sum prod
+        # axes :: (batch, sequence, mixture, time)
+        expo_term = -0.5*((y-mus)**2)/sig**2
+        coeff = T.log(T.maximum(1./(T.sqrt(2.*np.pi)*sig), EPS))
+        #coeff = T.log(1./(T.sqrt(2.*np.pi)*sig))
+        sequences = coeff + expo_term
+        log_sequences = T.log(pis + EPS) + T.sum(sequences, axis=3, keepdims=True)
 
-        #zinside_expo = -0.5*((z-mus)**2)/sig**2
-        #zexpo = T.exp(zinside_expo)
-        #zcoeff = pis*(1./(T.sqrt(2.*np.pi)*sig))
-        #zinside_log = (zcoeff*zexpo).sum(axis=2)
-        #zLL = -(T.log(zinside_log)).sum()
+        log_sequences_max = T.max(log_sequences, axis=2, keepdims=True)
+
+        LL = -(log_sequences_max + T.log(EPS + T.sum(T.exp(log_sequences - log_sequences_max), axis=2, keepdims=True))).mean()
 
         model = Model(LL)
         self.model = model
@@ -242,7 +214,7 @@ class LSTM_GMM :
         data, data_mean, data_std  = self.prepare_data(data)
         print data_mean, data_std
         print "Building Theano Graph"
-        self.bprop, self.fprop = self.build_theano_functions(data_mean, data_std)
+        self.bprop, self.fprop = self.build_theano_functions()
 
         if self.load :
             self.load_model()
@@ -256,34 +228,30 @@ class LSTM_GMM :
             cost = 0.
             k = 1
             nan_flag = False
-            for i in range(0, (len(data)-2*self.time_dim), self.time_dim) :
+            timestep = self.sequence_dim*self.time_dim
+            for i in range(0, (len(data)-2*timestep), timestep) :
                 sys.stdout.write('\rComputing LL on %d/%d examples'%(i, data.shape[0]))
                 sys.stdout.flush()
 
-                x = data[i:i+self.time_dim]
-                x = x.reshape((self.batch_dim, self.time_dim, self.input_dim))
+                x = data[i:i+timestep]
+                x = x.reshape((self.batch_dim, self.sequence_dim, self.time_dim))
 
-                #y = data[i+self.time_dim:i+2*self.time_dim]
-                y = data[i+1:i+self.time_dim+1]
-                y = y.reshape((self.batch_dim, self.time_dim, self.input_dim))
+                y = data[i+timestep:i+2*timestep]
+                y = y.reshape((self.batch_dim, self.sequence_dim, self.time_dim))
                 y = y[:,:,np.newaxis,:]
-
-                #z = data[self.samplerate*3600:self.samplerate*3600+self.time_dim]
-                #z = z.reshape((self.batch_dim, self.time_dim, self.input_dim))
-                #z_ = z[:,:,np.newaxis,:]
 
                 if self.debug :
                     l = self.bprop(x, y, self.lr)
-                    #make_nice_print(l)
-                    #import ipdb ; ipdb.set_trace()
+                    make_nice_print(l)
+                    import ipdb ; ipdb.set_trace()
                 else :
                     #cost = self.bprop(z,z_,z_)
                     cost = self.bprop(x, y, self.lr)
 
                 nblocks = np.floor(i/blocks)
                 if nblocks >= k and nblocks <= costs.shape[1] :
-                    #print cost
-                    make_nice_print(l)
+                    print cost
+                    #make_nice_print(l)
                     k+=1
                     #costs[epoch,nblocks-1] = cost-np.sum(costs[epoch,:nblocks-1])
                     #self.save_model(cost[0])
@@ -353,9 +321,9 @@ class LSTM_GMM :
     # normalize the data in [-1,1]
     # and bring it to 0 mean 1 variance <-- could be a bad idea...
     def prepare_data(self, data) :
-        data = data[self.samplerate*60*2:len(data)-self.samplerate*60*2]
+        data = data[self.samplerate*60*1:len(data)-self.samplerate*60*1]
         data = data.astype(np.float32)
-        data = data/np.max(data)
+        data = data/np.max(np.absolute(data))
         #data = (data-np.average(data))/np.std(data)
         return data, np.mean(data), np.std(data)
 
