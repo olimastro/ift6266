@@ -97,6 +97,23 @@
 <p>I have carried on with my motivation on why I tried this paper on the first place. I wanted to apply it on the frequency domain where it makes sense to model each frequency bin of the spectrogram as a Gaussian.</p>
 
 <p>This week I restructured the code and implemented that idea on a new python script, but of course, on the first execution I was welcomed with NaNs. To be continued next week. </p>
+
+<h3>
+<a id="week-of-the-4th-of-april" class="anchor" href="#week-of-the-4th-of-april" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Week of the 4th of April</h3>
+
+<p>This week was intense! First I rewrote the two scripts, the one that works in the time domain and the other one for frequencies, so that they could use the MainLoop of blocks and also made the data handler to be in fuel. The reason behind this is that as I was mentioning in the past weeks I think I ran into an optimization problem. That being said, I needed to use things such as AdaDelta, Momentum, etc, and they are all contained in blocks. I had to write my own class for a fuel scheme as no scheme supported overlapping in the operation process. By overlapping I mean a scheme that, for example, gives me 5 time points on the first batch so [0,1,2,3,4] and second batch [4,5,6,7,8] and so on, the overlap here being on the 4. </p>
+
+<p>Even with all of that the training was going nowhere, I lost track of all the configurations (number of LSTM layers, LSTM dimension, time dimension,...) I tried, for all of them nothing was being learned. I went to talk to <a href="https://alexnguyen6266h16.wordpress.com/">Alex Nguyen</a> who was generating nice sounding samples and I realized one very stupid thing I was doing. He is generating sequences while I was trying to generate one time point. Of course! An audio signal is way too crazy one time point at a time, it makes way more sense to have a model that can generate a sequence (like one second which would be 16000 points) then trying to learn what it should do for just one tiny point. I went ahead with this, now my GMM would try to fit a distribution that gives <em>t</em> number of points and learn on <em>s</em> sequences. The math would be this :</p>
+
+<p>INSERT MATH HERE</p>
+
+<p>I have to thank Josee and Kyle as I had a nice discussion with them to help me understand what was happening. After modifying my model for this cost function and having sequences, my first run was of course NaNs. After much failed trials, Josee again was of great help. As he trained GMM too, he gave me tricks like putting epsilon values everywhere there was a logarithm to prevent underflows and play around with the log(sum(exp)) math trick to make it numerically stable. For the first time in two months the likelihood was actually going down across multiple epochs, not randomly oscillating!!!!! I encountered an interesting problem though that it would crash to NaNs after a certain number of epochs while switching from the end of one to the next. So far, for every epoch I was sequentially passing through the whole song, I thought it was necessary to do this. Seems like my understanding of the LSTM was not complete, I thought that you needed to start the next batch to the same point where you ended the last one. That's not true, the LSTM can only learn the time structure over the dimension of time you give it, basically different sequences are independent of each other. This means I can shuffle the data in chunks of sequence length and that fixed my problem mentioned above, looks like it was overfitting and got crazy with the transitions from the end of the song to the beginning when going to a new epoch. </p>
+
+<p>I implemented a fuel scheme that would shuffled the whole data set in chunks of sequence length and a fuel transformer that reshaped my data. I tried so far these configurations :</p>
+
+<p>INSERT CONFIGURATIONS</p>
+
+<p>All of them are optimized with Adam. Now it is learning past an arbitrary amount of epochs. I am still exploring the set of parameters that gives the lowest likelihood and shall generate something next week. Will it finally sound like something?</p>
         </section>
 
         <aside id="sidebar">
