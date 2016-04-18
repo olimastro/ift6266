@@ -4,64 +4,83 @@ import theano.tensor as T
 import sys
 import cPickle as pkl
 
-from blocks.algorithms import GradientDescent, AdaGrad
+from blocks.algorithms import GradientDescent, Adam
 from blocks.bricks.simple import Linear, NDimensionalSoftmax
 from blocks.bricks.recurrent import LSTM
-from blocks.extensions import FinishAfter, Printing, ProgressBar
+from blocks.extensions import FinishAfter, Printing
 from blocks.extensions.monitoring import TrainingDataMonitoring
+from blocks.extensions.saveload import Checkpoint
 from blocks.initialization import IsotropicGaussian, Constant, Uniform, Orthogonal
 from blocks.main_loop import MainLoop
 from blocks.model import Model
 
 from fuel.datasets.hdf5 import H5PYDataset
 from fuel.streams import DataStream
+from fuel.transformers import Mapping
 
-from scheme import OverlapSequentialScheme
+from convolution import CONV
+from extensions import SaveParams
+from scheme import ShuffledBatchChunkScheme
+from transformer import ReshapeTransformer, spec_mapping
 
+from scipy.io.wavfile import write
 from sklearn.mixture import GMM
 
 np.random.seed(1111)
 np.seterr(all='warn')
 
+############----PARAMETERS----##############
 EXP_PATH = "/Tmp/mastropo/"
 DATAPATH = "/Tmp/mastropo/song.hdf5"
 NAME = "lstm_gmm"
-EPOCHS = 15
+EPOCHS = 2
+EPS = 1e-7
+
+#------------------GMM---------------------#
 # x mixtures = 3*x params for time serie
-NMIXTURES = 15
-# [0] : sequence of points in time
+NMIXTURES = 20
+# [0] : time dimension for one sequence
 # [1] : batch size (doesn't make sense to be more than 1?)
 # [2] : input dimension (1 for time serie)
-# [3] : lstm dimension, hidden representation
+# [3] : sequence dimension
 # [4] : output dimension, should be equal to number of GMM params
-DIMS_TUPLE = (8000, 1, 1, 0, NMIXTURES*3)
+DIMS_TUPLE = (8000, 1, 1, 15, NMIXTURES*3)
 # list[i] = dim of ith layer
-LSTM_DIM_LIST = [512, 512]
-#LSTM_DIM_LIST = [512]
+#LSTM_DIM_LIST = [512, 512, 512]
+LSTM_DIM_LIST = [800]
+
+#-----------------CONV---------------------#
+WITH_CONV = True
+# list of convolutional sequence parameters
+# list[i] := params for ith layer
+# list[i][0:3] := params for conv layer
+#   [0] = (,) filter size, [1] = nb of filters per channel, [2] = nb channels
+# list[i][3] := pooling size
+PARAMS = [[(4,4), 200, 1, (3,3)], [(3,3), 100, 200, (2,2)]]
+IMAGE_SIZE = (30, 257)
+############################################
 
 """
-    This class will train a mixture of gaussian.
-    First, an RNN will produce a hidden state.
-    Second, the EM algorithm will fit a GMM over the next time step
-    which is the target.
-    Third, the gradient will be computed with the LL of this GMM
-    and the hidden state.
+    This class will train a mixture of gaussian according to Alex Graves' paper
+    on generating sequence using RNN and GMM.
+    In short, we will use the output of an RNN to parametrize a Gaussian Mixture
+    Model. Each Gaussians will then be sampled from to generate each time points for each sequence.
+    Meaning the the time dimension in the RNN is actually the sequence dimension.
+    We will give to the RNN a sequence (self.sequence_dim) of time points (self.time_dim).
+
+    (Optionnally), it can also be fed features from the spectrogram learned by a conv_net.
 """
 class LSTM_GMM :
-    def __init__(self, dims_tuple, lstm_dim_list, gmm_dim, learning_rate=0.000001, samplerate=48000, model_saving=False, load=False) :
-        self.debug = 1
-        self.model_saving=model_saving
-        self.load = load
-        self.lr = learning_rate
-        #self.lr = 0
+    def __init__(self, dims_tuple, lstm_dim_list, gmm_dim, learning_rate=0.0000001, samplerate=48000, with_conv=False) :
+        self.debug = 0
+        self.lr = learning_rate # this is useless as we use Adam
         self.orth_scale = 0.9
         self.samplerate = samplerate
-        self.best_ll = np.inf
 
         self.time_dim = dims_tuple[0]
-        #self.time_dim = 2
         self.batch_dim = dims_tuple[1]
         self.input_dim = dims_tuple[2]
+        self.sequence_dim = dims_tuple[3]
         self.output_dim = dims_tuple[4]
         self.gmm_dim = gmm_dim
 
@@ -69,16 +88,31 @@ class LSTM_GMM :
 
         assert self.gmm_dim*3 == self.output_dim
 
+        if with_conv :
+            self.conv = CONV(PARAMS, IMAGE_SIZE)
+        else :
+            self.conv = None
+
 
     def build_theano_functions(self):
         x = T.fmatrix('time_sequence')
-        x = x.reshape((self.batch_dim, self.time_dim+1, self.input_dim))
+        x = x.reshape((self.batch_dim, self.sequence_dim, self.time_dim))
 
-        y = x[:,1:self.time_dim+1,:]
-        x = x[:,:self.time_dim,:]
+        y = x[:,1:self.sequence_dim,:]
+        x = x[:,:self.sequence_dim-1,:]
+
+        # if we try to include the spectrogram features
+        spec_dims = 0
+        if self.conv is not None :
+            spec = T.ftensor4('spectrogram')
+            spec_features, spec_dims = self.conv.build_conv_layers(spec)
+            spec_dims = np.prod(spec_dims)
+            spec_features = spec_features.reshape(
+                (self.batch_dim, self.sequence_dim, spec_dims))
+            x = T.concatenate([x, spec_features], axis=2)
 
         layers_input = [x]
-        dims =np.array([self.input_dim])
+        dims =np.array([self.time_dim + spec_dims])
         for dim in self.lstm_layers_dim :
             dims = np.append(dims, dim)
         print "Dimensions =", dims
@@ -91,13 +125,12 @@ class LSTM_GMM :
             linear = Linear(dims[layer],
                             dims[layer+1]*4,
                             weights_init=Orthogonal(self.orth_scale),
-                            #weights_init=IsotropicGaussian(mean=1.,std=1),
                             biases_init=Constant(0),
                             name="linear"+str(layer))
             linear.initialize()
             lstm_input = linear.apply(layers_input[layer])
 
-            # the lstm wants batch X time X value
+            # the lstm wants batch X sequence X time
             lstm = LSTM(
                 dim=dims[layer+1],
                 weights_init=IsotropicGaussian(mean=0.,std=0.5),
@@ -116,7 +149,6 @@ class LSTM_GMM :
         output_transform = Linear(dims[1:].sum(),
                                   self.output_dim,
                                   weights_init=Orthogonal(self.orth_scale),
-                                  #weights_init=IsotropicGaussian(mean=0., std=1),
                                   use_bias=False,
                                   name="output_transform")
         output_transform.initialize()
@@ -128,18 +160,11 @@ class LSTM_GMM :
 
         # transforms to find each gmm params (mu, pi, sig)
         # small hack to softmax a 3D tensor
-        #pis = T.reshape(
-        #            T.nnet.softmax(
-        #                T.nnet.sigmoid(
-        #                    T.reshape(y_hat[:,:,0:self.gmm_dim], (self.time_dim*self.batch_dim, self.gmm_dim)))),
-        #            (self.batch_dim, self.time_dim, self.gmm_dim))
         pis = T.reshape(
                     T.nnet.softmax(
-                        T.reshape(y_hat[:,:,0:self.gmm_dim], (self.time_dim*self.batch_dim, self.gmm_dim))),
-                    (self.batch_dim, self.time_dim, self.gmm_dim))
-        #sig = T.exp(y_hat[:,:,self.gmm_dim:self.gmm_dim*2])
-        sig = T.nnet.relu(y_hat[:,:,self.gmm_dim:self.gmm_dim*2])+0.05
-        #mus = 1.5*T.tanh(y_hat[:,:,self.gmm_dim*2:])
+                        T.reshape(y_hat[:,:,:self.gmm_dim], ((self.sequence_dim-1)*self.batch_dim, self.gmm_dim))),
+                    (self.batch_dim, (self.sequence_dim-1), self.gmm_dim))
+        sig = T.exp(y_hat[:,:,self.gmm_dim:self.gmm_dim*2])+1e-6
         mus = y_hat[:,:,self.gmm_dim*2:]
 
         pis = pis[:,:,:,np.newaxis]
@@ -147,14 +172,22 @@ class LSTM_GMM :
         sig = sig[:,:,:,np.newaxis]
         y = y[:,:,np.newaxis,:]
 
+        y = T.patternbroadcast(y, (False, False, True, False))
+        mus = T.patternbroadcast(mus, (False, False, False, True))
+        sig = T.patternbroadcast(sig, (False, False, False, True))
+
         # sum likelihood with targets
-        # sum inside log accross mixtures, sum outside log accross time
-        inside_expo = -0.5*((y-mus)**2)/sig**2
-        expo = T.exp(inside_expo)
-        coeff = pis*(1./(T.sqrt(2.*np.pi)*sig))
-        inside_log = T.log(coeff*expo)
-        inside_log_max = T.max(inside_log, axis=2, keepdims=True)
-        LL = -(inside_log_max + T.log(T.sum(T.exp(inside_log - inside_log_max), axis=2, keepdims=True))).sum()
+        # see blog for this crazy Pr() = sum log sum prod
+        # axes :: (batch, sequence, mixture, time)
+        expo_term = -0.5*((y-mus)**2)/sig**2
+        coeff = T.log(T.maximum(1./(T.sqrt(2.*np.pi)*sig), EPS))
+        #coeff = T.log(1./(T.sqrt(2.*np.pi)*sig))
+        sequences = coeff + expo_term
+        log_sequences = T.log(pis + EPS) + T.sum(sequences, axis=3, keepdims=True)
+
+        log_sequences_max = T.max(log_sequences, axis=2, keepdims=True)
+
+        LL = -(log_sequences_max + T.log(EPS + T.sum(T.exp(log_sequences - log_sequences_max), axis=2, keepdims=True))).mean()
         LL.name = "summed_likelihood"
 
         model = Model(LL)
@@ -164,53 +197,29 @@ class LSTM_GMM :
         algorithm = GradientDescent(
             cost=LL,
             parameters=model.parameters,
-            step_rule=AdaGrad())
+            step_rule=Adam())
 
-        f = theano.function([x],[sig, mus])
+        f = theano.function([x],[pis, sig, mus])
 
         return algorithm, f
-
-
-    def save_model(self, cost, not_best=False) :
-        if not self.model_saving :
-            return
-        prefix = "best_"
-        name = NAME+"_params.pkl"
-        if not_best :
-            prefix = ''
-            cost = -np.inf
-
-        if cost < self.best_ll :
-            self.best_ll = cost
-            params = self.model.get_parameter_values()
-            f = open(EXP_PATH+prefix+name,'w')
-            pkl.dump(params, f)
-            f.close()
-
-
-    def load_model(self, best=True) :
-        if best :
-            prefix = "best_"
-        else :
-            prefix = ''
-        name = NAME+"_params.pkl"
-        print "Loading model at", EXP_PATH+prefix+name
-        f = open(EXP_PATH+prefix+name)
-        params = pkl.load(f)
-        f.close()
-        self.bprop, self.fprop = self.build_theano_functions(0.,0.)
-        self.model.set_parameter_values(params)
 
 
     def train(self):
         print "Loading data"
         datafile = self.get_datafile()
         nbexamples = datafile.num_examples
+        nbexamples -= nbexamples%(self.sequence_dim*self.time_dim)
 
-        train_stream = DataStream(
-            dataset=datafile,
-            iteration_scheme=OverlapSequentialScheme(
-                nbexamples, self.time_dim))
+        train_stream = ReshapeTransformer(
+            DataStream(
+                dataset=datafile,
+                iteration_scheme=ShuffledBatchChunkScheme(
+                    nbexamples, self.sequence_dim*self.time_dim)),
+            self.sequence_dim,
+            self.time_dim)
+
+        if self.conv is not None :
+            train_stream = Mapping(train_stream, spec_mapping, add_sources=['spectrogram'])
 
         print "Building Theano Graph"
         algorithm, self.fprop = self.build_theano_functions()
@@ -218,68 +227,91 @@ class LSTM_GMM :
         main_loop = MainLoop(
             algorithm=algorithm,
             data_stream=train_stream,
+            model=self.model,
             extensions=[
                 FinishAfter(after_n_epochs=EPOCHS),
                 TrainingDataMonitoring(
                     [self.model.outputs[0]],
                     prefix="train",
-                    after_epoch=True,
-                    every_n_batches=4000),
-                #ProgressBar(),
-                Printing()
+                    after_epoch=True),
+                Printing(),
+                #Checkpoint(EXP_PATH+NAME+"_model"),
+                #SaveParams(EXP_PATH+NAME, after_epoch=True)
             ])
 
         main_loop.run()
 
 
-    def generate(self, epoch, begin, minutes=1):
-        import pdb ; pdb.set_trace()
+    def load_model(self) :
+        model_path = EXP_PATH+NAME+"_params.pkl"
+        print "Loading model at", model_path
+        f = open(model_path)
+        params = pkl.load(f)
+        f.close()
+        algorithm, self.fprop = self.build_theano_functions()
+        self.model.set_parameter_values(params)
+
+
+    def generate(self, seed=None, minutes=0.5):
+        print "Generating module"
+        import ipdb ; ipdb.set_trace()
+        timestep = self.time_dim*(self.sequence_dim-1)
         samples = minutes*self.samplerate*60
-        true_len = int(np.floor(samples/self.time_dim)*self.time_dim)
-        song = np.zeros(true_len, dtype=np.float32)
+        song = np.zeros(samples, dtype=np.float32)
+
+        if seed is None :
+            datafile = self.get_datafile()
+            seed = datafile.get_data(None, range(timestep))
+            seed = seed[0].flatten()
+
+        song[:timestep] = seed
 
         print
-        for i in range(self.time_dim, true_len-self.time_dim) :
+        for i in range(0, len(song)-self.time_dim-timestep, self.time_dim) :
             sys.stdout.write('\rGenerating %d/%d samples'%(i, samples))
             sys.stdout.flush()
 
-            params = self.fprop(song[i:i+self.time_dim].reshape(
-                (self.batch_dim, self.time_dim, self.input_dim)))
-            song[i+1] = self.sample_from_gmm(params)
+            params = self.fprop(song[i:i+timestep].reshape(
+                (self.batch_dim, self.sequence_dim-1, self.time_dim)))
+            #import pdb ; pdb.set_trace()
+            try :
+                song[i+timestep:i+timestep+self.time_dim] = self.sample_from_gmm(params)
+            except ValueError :
+                import ipdb ; ipdb.set_trace()
 
         #song *= 2**30
         #song = song.astype(np.int32)
-        write(EXP_PATH+"generation"+str(epoch)+".wav", self.samplerate, song)
+        write(EXP_PATH+"generation.wav", self.samplerate, song)
 
 
     def sample_from_gmm(self, params) :
         # There is one set of mixture param for every timestep
-        # remember the shape is [batch, time, mixture, value]
+        # remember the shape is [batch, sequence, mixture, time]
         pis = np.array(params[0])
         sig = np.array(params[1])
         mus = np.array(params[2])
 
-        #sequence = np.empty(self.time_dim, dtype=np.float32)
-        #for i in range(self.time_dim) :
         gmm = GMM(self.gmm_dim, covariance_type='spherical', init_params='')
-        gmm.weights_ = pis[0,0,:]
-        gmm.means_ = mus[0,0,:]
-        gmm.covars_= sig[0,0,:]
+        gmm.weights_ = pis[0,-1,:]
+        gmm.means_ = mus[0,-1,:]
+        gmm.covars_= sig[0,-1,:]
 
-            #sequence[i] = gmm.sample()
-
-        return gmm.sample()
+        return gmm.sample(self.time_dim).flatten()
 
 
     def get_datafile(self) :
-        datafile = H5PYDataset(DATAPATH, which_sets=('train', ),
-                               sources=['time_sequence'], load_in_memory=True)
+        try :
+            datafile = H5PYDataset(DATAPATH, which_sets=('train', ),
+                                   sources=['time_sequence'], load_in_memory=True)
+        except IOError :
+            print "Could not find the hdf5 file. Will try to generate it"
+            raise NotImplementedError
         return datafile
 
 
 
 if __name__ == "__main__" :
-    model = LSTM_GMM(DIMS_TUPLE, LSTM_DIM_LIST, NMIXTURES, samplerate=16000)
+    model = LSTM_GMM(DIMS_TUPLE, LSTM_DIM_LIST, NMIXTURES, samplerate=16000, with_conv=WITH_CONV)
     model.train()
     #model.load_model()
-    #model.generate(1,0)
+    #model.generate()

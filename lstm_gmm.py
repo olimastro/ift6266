@@ -212,6 +212,7 @@ class LSTM_GMM :
     def train(self, data, epochs=EPOCHS):
         #import ipdb ; ipdb.set_trace()
         data, data_mean, data_std  = self.prepare_data(data)
+        data = self.shuffledata(data)
         print data_mean, data_std
         print "Building Theano Graph"
         self.bprop, self.fprop = self.build_theano_functions()
@@ -266,9 +267,6 @@ class LSTM_GMM :
                 begin = self.samplerate*60*5
                 self.generate(epoch, data[begin:begin+self.time_dim].reshape((self.batch_dim, self.time_dim, self.input_dim)))
 
-            if (epoch+2)%5 :
-                self.lr*=10
-
             #f = open(EXP_PATH+NAME+"_cost.npy",'w')
             #np.save(f, costs)
             #f.close()
@@ -276,6 +274,8 @@ class LSTM_GMM :
             if nan_flag :
                 self.save_model(0, not_best=True)
                 sys.exit()
+
+            data = self.shuffledata(data)
 
 
     def generate(self, epoch, begin, minutes=1):
@@ -326,6 +326,10 @@ class LSTM_GMM :
         data = data/np.max(np.absolute(data))
         #data = (data-np.average(data))/np.std(data)
         return data, np.mean(data), np.std(data)
+
+
+    def shuffledata(self, data):
+        import ipdb ; ipdb.set_trace()
 
 
 
