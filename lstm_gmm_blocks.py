@@ -50,7 +50,7 @@ DIMS_TUPLE = (16000, 1, 1, 10, NMIXTURES*3)
 LSTM_DIM_LIST = [800]
 
 #-----------------CONV---------------------#
-WITH_CONV = True
+WITH_CONV = False
 # list of convolutional sequence parameters
 # list[i] := params for ith layer
 # list[i][0:3] := params for conv layer
