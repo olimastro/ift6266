@@ -9,10 +9,10 @@ from blocks.bricks.simple import Linear, NDimensionalSoftmax
 from blocks.bricks.recurrent import LSTM
 from blocks.extensions import FinishAfter, Printing
 from blocks.extensions.monitoring import TrainingDataMonitoring
-from blocks.extensions.saveload import Checkpoint
 from blocks.initialization import IsotropicGaussian, Constant, Uniform, Orthogonal
 from blocks.main_loop import MainLoop
 from blocks.model import Model
+from blocks.monitoring import aggregation
 
 from fuel.datasets.hdf5 import H5PYDataset
 from fuel.streams import DataStream
@@ -32,8 +32,8 @@ np.seterr(all='warn')
 ############----PARAMETERS----##############
 EXP_PATH = "/Tmp/mastropo/"
 DATAPATH = "/Tmp/mastropo/song.hdf5"
-NAME = "lstm_gmm"
-EPOCHS = 2
+NAME = "lstm_gmm_2lconv"
+EPOCHS = 50
 EPS = 1e-7
 
 #------------------GMM---------------------#
@@ -44,7 +44,7 @@ NMIXTURES = 20
 # [2] : input dimension (1 for time serie)
 # [3] : sequence dimension
 # [4] : output dimension, should be equal to number of GMM params
-DIMS_TUPLE = (8000, 1, 1, 15, NMIXTURES*3)
+DIMS_TUPLE = (16000, 1, 1, 10, NMIXTURES*3)
 # list[i] = dim of ith layer
 #LSTM_DIM_LIST = [512, 512, 512]
 LSTM_DIM_LIST = [800]
@@ -56,8 +56,9 @@ WITH_CONV = True
 # list[i][0:3] := params for conv layer
 #   [0] = (,) filter size, [1] = nb of filters per channel, [2] = nb channels
 # list[i][3] := pooling size
-PARAMS = [[(4,4), 200, 1, (3,3)], [(3,3), 100, 200, (2,2)]]
-IMAGE_SIZE = (30, 257)
+CONV_PARAMS = [[(4,4), 64, 1, (3,3)], [(3,3), 32, 64, (2,2)]]
+#PARAMS = [[(4,4), 50, 1, (3,3)]]
+IMAGE_SIZE = (30, 257) #now a dummy param as the img size will be infered in get_datafile method
 ############################################
 
 """
@@ -89,9 +90,13 @@ class LSTM_GMM :
         assert self.gmm_dim*3 == self.output_dim
 
         if with_conv :
-            self.conv = CONV(PARAMS, IMAGE_SIZE)
+            self.image_size = IMAGE_SIZE
         else :
-            self.conv = None
+            self.image_size = None
+
+
+    def init_conv(self) :
+        self.conv = CONV(CONV_PARAMS, self.image_size)
 
 
     def build_theano_functions(self):
@@ -103,12 +108,15 @@ class LSTM_GMM :
 
         # if we try to include the spectrogram features
         spec_dims = 0
-        if self.conv is not None :
+        if self.image_size is not None :
+            print "Convolution activated"
+            self.init_conv()
             spec = T.ftensor4('spectrogram')
             spec_features, spec_dims = self.conv.build_conv_layers(spec)
+            print "Conv final dims =", spec_dims
             spec_dims = np.prod(spec_dims)
             spec_features = spec_features.reshape(
-                (self.batch_dim, self.sequence_dim, spec_dims))
+                (self.batch_dim, self.sequence_dim-1, spec_dims))
             x = T.concatenate([x, spec_features], axis=2)
 
         layers_input = [x]
@@ -218,7 +226,7 @@ class LSTM_GMM :
             self.sequence_dim,
             self.time_dim)
 
-        if self.conv is not None :
+        if self.image_size is not None :
             train_stream = Mapping(train_stream, spec_mapping, add_sources=['spectrogram'])
 
         print "Building Theano Graph"
@@ -231,12 +239,11 @@ class LSTM_GMM :
             extensions=[
                 FinishAfter(after_n_epochs=EPOCHS),
                 TrainingDataMonitoring(
-                    [self.model.outputs[0]],
+                    [aggregation.mean(self.model.outputs[0])],
                     prefix="train",
                     after_epoch=True),
                 Printing(),
-                #Checkpoint(EXP_PATH+NAME+"_model"),
-                #SaveParams(EXP_PATH+NAME, after_epoch=True)
+                SaveParams(EXP_PATH+NAME, after_epoch=True)
             ])
 
         main_loop.run()
@@ -254,7 +261,6 @@ class LSTM_GMM :
 
     def generate(self, seed=None, minutes=0.5):
         print "Generating module"
-        import ipdb ; ipdb.set_trace()
         timestep = self.time_dim*(self.sequence_dim-1)
         samples = minutes*self.samplerate*60
         song = np.zeros(samples, dtype=np.float32)
@@ -273,14 +279,11 @@ class LSTM_GMM :
 
             params = self.fprop(song[i:i+timestep].reshape(
                 (self.batch_dim, self.sequence_dim-1, self.time_dim)))
-            #import pdb ; pdb.set_trace()
             try :
                 song[i+timestep:i+timestep+self.time_dim] = self.sample_from_gmm(params)
             except ValueError :
                 import ipdb ; ipdb.set_trace()
 
-        #song *= 2**30
-        #song = song.astype(np.int32)
         write(EXP_PATH+"generation.wav", self.samplerate, song)
 
 
@@ -306,6 +309,32 @@ class LSTM_GMM :
         except IOError :
             print "Could not find the hdf5 file. Will try to generate it"
             raise NotImplementedError
+
+        if self.image_size is not None :
+            print "Image size attribute is not None, need to infer the image size of the spectrogram"
+            # temporarly create all the streams and stuff to make one mapping, inside the
+            # mapping are the image size. Probably a cleaner way to do this.
+            nbexamples = datafile.num_examples
+            nbexamples -= nbexamples%(self.sequence_dim*self.time_dim)
+            dummy_stream = ReshapeTransformer(
+                DataStream(
+                    dataset=datafile,
+                    iteration_scheme=ShuffledBatchChunkScheme(
+                        nbexamples, self.sequence_dim*self.time_dim)),
+                self.sequence_dim,
+                self.time_dim)
+            dummy_stream = Mapping(dummy_stream, spec_mapping, add_sources=['spectrogram'])
+            dummy_epoch_iterator = dummy_stream.get_epoch_iterator()
+            dummy_data = next(dummy_epoch_iterator)
+            dummy_data = dummy_data[1]
+            self.image_size = (dummy_data.shape[2], dummy_data.shape[3])
+            print "Img size found, it should be =", self.image_size
+
+            del nbexamples
+            del dummy_stream
+            del dummy_epoch_iterator
+            del dummy_data
+
         return datafile
 
 
@@ -313,5 +342,5 @@ class LSTM_GMM :
 if __name__ == "__main__" :
     model = LSTM_GMM(DIMS_TUPLE, LSTM_DIM_LIST, NMIXTURES, samplerate=16000, with_conv=WITH_CONV)
     model.train()
-    #model.load_model()
-    #model.generate()
+    model.load_model()
+    model.generate()

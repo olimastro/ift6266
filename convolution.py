@@ -4,6 +4,8 @@ import theano.tensor as T
 
 from blocks.bricks.conv import ConvolutionalSequence, MaxPooling, Convolutional
 from blocks.bricks.conv import Flattener
+from blocks.bricks.simple import Rectifier
+from blocks.initialization import IsotropicGaussian, Constant
 
 # list of convolutional sequence parameters
 # list[i] := params for ith layer
@@ -31,10 +33,10 @@ class CONV :
         conv_list = []
         for layer in range(self.layers) :
             layer_param = self.params[layer]
-            if layer == 0 :
-                conv_layer = Convolutional(layer_param[0], layer_param[1], layer_param[2], image_size=self.image_size)
-            else :
-                conv_layer = Convolutional(layer_param[0], layer_param[1], layer_param[2])
+            #if layer == 0 :
+            #    conv_layer = Convolutional(layer_param[0], layer_param[1], layer_param[2], image_size=self.image_size)#, batch_size=15)
+            #else :
+            conv_layer = Convolutional(layer_param[0], layer_param[1], layer_param[2])#, batch_size=15)
             pool_layer = MaxPooling(layer_param[3])
 
             conv_layer.name = "convolution"+str(layer)
@@ -42,15 +44,23 @@ class CONV :
 
             conv_list.append(conv_layer)
             conv_list.append(pool_layer)
+            conv_list.append(Rectifier())
 
-        conv_seq = ConvolutionalSequence(conv_list, self.params[0][2], image_size=self.image_size)
+        conv_seq = ConvolutionalSequence(
+            conv_list,
+            self.params[0][2],
+            image_size=self.image_size,
+            weights_init=IsotropicGaussian(std=0.5, mean=0),
+            biases_init=Constant(0))
 
+        conv_seq._push_allocation_config()
+        conv_seq.initialize()
         out = conv_seq.apply(image)
 
-        if self.with_flatten :
-            flat = Flattener()
-            flat_out = flat.apply(out)
-            return flat_out, conv_seq.get_dim('output')
+        #if self.with_flatten :
+        #    flat = Flattener()
+        #    flat_out = flat.apply(out)
+        return out, conv_seq.get_dim('output')
 
         return out
         #return image, out

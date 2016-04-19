@@ -23,10 +23,14 @@ class ReshapeTransformer(SourcewiseTransformer):
 
 def spec_mapping(wave) :
     wave = wave[0]
+    wave = wave[:-1,:]
     window = signal.cosine(WINDOW_SIZE)
 
     spec = signal.spectrogram(wave, window=window, nperseg=WINDOW_SIZE, noverlap=OVERLAP, mode='psd')
     spec = np.swapaxes(spec[2], 2, 1)
-    spec = spec[np.newaxis,:,:,:]
+    # The convnet wants a tensor4 in (batch, channel, image x, image y)
+    # our batch here is the sequence in time.
+    # There is only one channel
+    spec = spec[:,np.newaxis,:,:]
 
     return (spec,)
