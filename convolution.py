@@ -3,10 +3,10 @@ import theano
 import theano.tensor as T
 
 from blocks.bricks.conv import ConvolutionalSequence, MaxPooling, Convolutional
-from blocks.bricks.conv import Flattener
 from blocks.bricks.simple import Rectifier
 from blocks.initialization import IsotropicGaussian, Constant
 
+#-----------These params are for the debugging------------#
 # list of convolutional sequence parameters
 # list[i] := params for ith layer
 # list[i][0:3] := params for conv layer
@@ -14,6 +14,14 @@ from blocks.initialization import IsotropicGaussian, Constant
 # list[i][3] := pooling size
 PARAMS = [[(4,4), 200, 1, (3,3)], [(3,3), 100, 200, (2,2)]]
 IMAGE_SIZE = (100,100)
+#---------------------------------------------------------#
+
+"""
+    This class implements a CNN using the ConvolutionalSequence brick.
+    IT IS NOT meant to be used by itself. It builds the theano computation
+    graph up to the output of the CNN which is returned by the only
+    method here.
+"""
 
 class CONV :
     def __init__(self, params, image_size, with_flatten=True) :
@@ -33,10 +41,7 @@ class CONV :
         conv_list = []
         for layer in range(self.layers) :
             layer_param = self.params[layer]
-            #if layer == 0 :
-            #    conv_layer = Convolutional(layer_param[0], layer_param[1], layer_param[2], image_size=self.image_size)#, batch_size=15)
-            #else :
-            conv_layer = Convolutional(layer_param[0], layer_param[1], layer_param[2])#, batch_size=15)
+            conv_layer = Convolutional(layer_param[0], layer_param[1], layer_param[2])
             pool_layer = MaxPooling(layer_param[3])
 
             conv_layer.name = "convolution"+str(layer)
@@ -57,15 +62,10 @@ class CONV :
         conv_seq.initialize()
         out = conv_seq.apply(image)
 
-        #if self.with_flatten :
-        #    flat = Flattener()
-        #    flat_out = flat.apply(out)
         return out, conv_seq.get_dim('output')
 
-        return out
-        #return image, out
 
-
+# DEBUG, not tested to be working by itself
 if __name__ == '__main__' :
     conv = CONV(PARAMS, IMAGE_SIZE)
     import ipdb ; ipdb.set_trace()
